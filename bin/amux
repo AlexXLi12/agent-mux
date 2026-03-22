@@ -47,6 +47,19 @@ _find_pane() {
   return 1
 }
 
+_name_exists() {
+  local name="$1"
+  [[ -n "$(_find_pane "$name")" ]]
+}
+
+_require_value() {
+  local flag="$1" value="${2-}"
+  if [[ -z "$value" || "$value" == --* ]]; then
+    echo "Error: $flag requires a value" >&2
+    return 1
+  fi
+}
+
 _agent_pane_ids() {
   tmux list-panes -F '#{pane_id}' -f '#{@amux-agent}' 2>/dev/null
 }
@@ -81,15 +94,15 @@ cmd_new() {
 
   while (( $# > 0 )); do
     case "$1" in
-      --type)    type="$2"; shift 2 ;;
-      --name)    name="$2"; shift 2 ;;
-      --prompt)  prompt="$2"; shift 2 ;;
+      --type)    _require_value "$1" "${2-}" || return 1; type="$2"; shift 2 ;;
+      --name)    _require_value "$1" "${2-}" || return 1; name="$2"; shift 2 ;;
+      --prompt)  _require_value "$1" "${2-}" || return 1; prompt="$2"; shift 2 ;;
       --resume)  resume=true; shift ;;
       --trust)   trust=true; shift ;;
-      --dir)     work_dir="$2"; shift 2 ;;
-      --target)  target="$2"; shift 2 ;;
+      --dir)     _require_value "$1" "${2-}" || return 1; work_dir="$2"; shift 2 ;;
+      --target)  _require_value "$1" "${2-}" || return 1; target="$2"; shift 2 ;;
       --)        shift; break ;;
-      *)         shift ;;
+      *)         echo "Error: unknown option: $1" >&2; return 1 ;;
     esac
   done
 
@@ -122,6 +135,10 @@ cmd_new() {
 
   # Auto-generate name
   [[ -z "$name" ]] && name=$(_next_name)
+  if _name_exists "$name"; then
+    echo "Error: agent '$name' already exists" >&2
+    return 1
+  fi
 
   # Remember the source pane (to kill if it's not an agent)
   local source_pane=""
@@ -309,9 +326,13 @@ cmd_rename() {
 
   local pane=$(_find_pane "$old")
   [[ -z "$pane" ]] && { echo "Error: agent '$old' not found" >&2; return 1; }
+  if [[ "$old" != "$new" ]] && _name_exists "$new"; then
+    echo "Error: agent '$new' already exists" >&2
+    return 1
+  fi
 
   tmux set-option -p -t "$pane" @amux-name "$new"
-  _update_window_name
+  _update_window_name "$pane"
 }
 
 cmd_scratch() {
@@ -454,7 +475,7 @@ cmd__rename_current() {
     local self="$AMUX_BIN"
     local current_name=$(tmux display -p '#{@amux-name}' 2>/dev/null)
     tmux display-popup -E -w 50% -h 3 -T " Rename agent " \
-      "printf '($current_name) > ' && read -r name && [ -n \"\$name\" ] && tmux set-option -p -t '$target' @amux-name \"\$name\" && tmux rename-window \"\$name [\$(tmux list-panes -f '#{@amux-agent}' 2>/dev/null | wc -l | tr -d ' ')]\""
+      "printf '($current_name) > ' && read -r name && [ -n \"\$name\" ] && exec \"$self\" rename \"$current_name\" \"\$name\""
   fi
 }
 

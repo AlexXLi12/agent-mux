@@ -5,8 +5,20 @@ AMUX_DIR="$(cd "$(dirname "$0")" && pwd)"
 ZSHRC="$HOME/.zshrc"
 TMUX_CONF="$HOME/.config/tmux/tmux.conf"
 
+portable_sed_inplace() {
+  local script="$1" file="$2"
+  if sed --version >/dev/null 2>&1; then
+    sed -i "$script" "$file"
+  else
+    sed -i '' "$script" "$file"
+  fi
+}
+
 echo "Installing amux from $AMUX_DIR"
 echo ""
+
+mkdir -p "$(dirname "$TMUX_CONF")"
+touch "$ZSHRC" "$TMUX_CONF"
 
 # Make script executable
 chmod +x "$AMUX_DIR/bin/amux"
@@ -25,10 +37,10 @@ else
 fi
 
 # Source tmux config
-if ! grep -qF "amux.tmux.conf" "$TMUX_CONF" 2>/dev/null; then
+if ! grep -qF "$AMUX_DIR/tmux/amux.tmux.conf" "$TMUX_CONF" 2>/dev/null; then
   if grep -q "run.*tpm/tpm" "$TMUX_CONF" 2>/dev/null; then
     # Insert before the TPM run line
-    sed -i '' "/run.*tpm\/tpm/i\\
+    portable_sed_inplace "/run.*tpm\\/tpm/i\\
 \\
 # amux - agent multiplexer\\
 source-file $AMUX_DIR/tmux/amux.tmux.conf
