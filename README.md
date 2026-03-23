@@ -53,20 +53,11 @@ The installer:
 - adds `completions/` to your `fpath`
 - sources the tmux bindings from your `~/.config/tmux/tmux.conf`
 
-### Important Path Note
+### Path Behavior
 
-The bundled [tmux/amux.tmux.conf](/Users/alexli/Coding/agent-mux/tmux/amux.tmux.conf) currently references `~/Coding/agent-mux/bin/amux` directly.
+The bundled [tmux/amux.tmux.conf](tmux/amux.tmux.conf) uses a tmux option, `@amux-bin`, that the installer points at your repo checkout.
 
-That means the default tmux keybindings assume this repo lives at:
-
-```text
-~/Coding/agent-mux
-```
-
-If you clone it somewhere else, either:
-
-- update [tmux/amux.tmux.conf](/Users/alexli/Coding/agent-mux/tmux/amux.tmux.conf) to point at your actual path, or
-- keep the repo at `~/Coding/agent-mux`
+That means the repo can live anywhere, as long as you run `./install.sh` so your shell and tmux config know where to find it.
 
 ## Usage
 
@@ -163,7 +154,7 @@ This opens an ephemeral tmux popup. By default it launches `claude`.
 
 ## Tmux Keybindings
 
-The shipped bindings are defined in [tmux/amux.tmux.conf](/Users/alexli/Coding/agent-mux/tmux/amux.tmux.conf):
+The shipped bindings are defined in [tmux/amux.tmux.conf](tmux/amux.tmux.conf):
 
 - `prefix a`: open the agent picker
 - `prefix A`: open the new-agent menu
@@ -200,7 +191,7 @@ If you pass `--resume` for a type without a configured resume command, `amux` ex
 
 ## Shell Completion
 
-zsh completion is included in [completions/_amux](/Users/alexli/Coding/agent-mux/completions/_amux).
+zsh completion is included in [completions/_amux](completions/_amux).
 
 The installer adds the completions directory to `fpath` through `~/.zshrc`.
 
@@ -212,10 +203,10 @@ source ~/.zshrc
 tmux source-file ~/.config/tmux/tmux.conf
 ```
 
-This removes the `PATH` / `fpath` entries and the tmux `source-file` line added by the installer.
+This removes the `PATH` / `fpath` entries plus the tmux `@amux-bin` and `source-file` lines added by the installer.
 
 ## Notes
 
-- This repo is currently macOS-oriented in its install and uninstall scripts because they use BSD `sed -i ''`.
+- The install and uninstall scripts are intended to work on both macOS and Linux.
 - The tool operates per tmux window. `amux ls`, `next`, `prev`, and picker actions only inspect panes marked as agents in the current window.
 - Window titles are updated to the active agent name plus its position, for example `reviewer [2/4]`.
