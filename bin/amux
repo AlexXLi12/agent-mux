@@ -18,7 +18,7 @@ typeset -A AGENT_RESUME
 AGENT_RESUME=(
   claude       "claude --resume"
   claude-trust "claude --dangerously-skip-permissions --resume"
-  codex        "codex --resume"
+  codex        "codex resume"
 )
 
 # --- Helpers ---

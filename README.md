@@ -24,7 +24,7 @@ Resume flows are implemented for:
 
 - `claude --resume`
 - `claude --dangerously-skip-permissions --resume`
-- `codex --resume`
+- `codex resume`
 
 ## Requirements
 
