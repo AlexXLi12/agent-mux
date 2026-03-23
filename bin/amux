@@ -152,7 +152,7 @@ cmd_new() {
     return 1
   fi
 
-  # Remember the source pane (to kill if it's not an agent)
+  # Remember the source pane so a plain shell can be replaced by the new agent pane.
   local source_pane=""
   if [[ -n "$target" ]]; then
     source_pane="$target"
@@ -179,14 +179,14 @@ cmd_new() {
   tmux set-option -p pane-border-status top
   tmux set-option -p pane-border-format " #{@amux-name} (#{@amux-type}) "
 
-  # Kill the original shell pane if it's not an agent
+  # Replace the source shell pane when launching from a non-agent target pane.
   if [[ "$source_is_agent" != "1" && "$source_pane" != "$new_pane" ]]; then
     tmux kill-pane -t "$source_pane" 2>/dev/null
   fi
 
-  # Zoom the new pane (if there are other panes left)
-  [[ "$(tmux display -p '#{window_zoomed_flag}')" != "1" ]] && \
-    tmux resize-pane -Z 2>/dev/null
+  # Zoom the agent pane (resize-pane -Z toggles zoom on; select-pane -Z only preserves it)
+  tmux select-pane -t "$new_pane"
+  tmux resize-pane -Z
 
   # Update window name
   _update_window_name
@@ -246,7 +246,10 @@ cmd_next() {
     next_idx=$(( (idx % ${#panes[@]}) + 1 ))
   fi
 
-  tmux select-pane -t "${panes[$next_idx]}" -Z
+  local target="${panes[$next_idx]}"
+  local was_zoomed=$(tmux display -t "$target" -p '#{window_zoomed_flag}' 2>/dev/null)
+  tmux select-pane -t "$target" -Z
+  [[ "$was_zoomed" != "1" ]] && tmux resize-pane -t "$target" -Z
   _update_window_name
 }
 
@@ -275,7 +278,10 @@ cmd_prev() {
     prev_idx=$(( ((idx - 2 + ${#panes[@]}) % ${#panes[@]}) + 1 ))
   fi
 
-  tmux select-pane -t "${panes[$prev_idx]}" -Z
+  local target="${panes[$prev_idx]}"
+  local was_zoomed=$(tmux display -t "$target" -p '#{window_zoomed_flag}' 2>/dev/null)
+  tmux select-pane -t "$target" -Z
+  [[ "$was_zoomed" != "1" ]] && tmux resize-pane -t "$target" -Z
   _update_window_name
 }
 
@@ -286,7 +292,9 @@ cmd_go() {
   local pane=$(_find_pane "$name")
   [[ -z "$pane" ]] && { echo "Error: agent '$name' not found" >&2; return 1; }
 
+  local was_zoomed=$(tmux display -t "$pane" -p '#{window_zoomed_flag}' 2>/dev/null)
   tmux select-pane -t "$pane" -Z || { echo "Error: failed to switch to '$name' ($pane)" >&2; return 1; }
+  [[ "$was_zoomed" != "1" ]] && tmux resize-pane -t "$pane" -Z
   _update_window_name "$pane"
 }
 
@@ -449,9 +457,10 @@ cmd__pick() {
     menu_args+=("Rename current"  "r" "run-shell '$self _rename_current'")
     menu_args+=("Log current"     "l" "run-shell '$self _log_current'")
     menu_args+=("Kill current"    "x" "run-shell '$self _kill_current'")
+    menu_args+=("Kill agent..."   "d" "run-shell '$self _kill_pick'")
     if [[ "$has_dead" == true ]]; then
       menu_args+=("Respawn current"  "R" "run-shell '$self _respawn_current'")
-      menu_args+=("Kill dead"        "d" "run-shell '$self kill --dead'")
+      menu_args+=("Kill dead"        "D" "run-shell '$self kill --dead'")
     fi
     menu_args+=("Kill all"        "X" "run-shell '$self kill --all'")
   fi
@@ -460,6 +469,30 @@ cmd__pick() {
   menu_args+=("Keybindings"    "?" "run-shell '$self _keybindings'")
 
   tmux display-menu -T " Agents " "${menu_args[@]}"
+}
+
+cmd__kill_pick() {
+  local self="$AMUX_BIN"
+  local -a menu_args=()
+  local idx=0
+
+  local pane_id title agent_type dead
+  while IFS=$'\t' read -r pane_id title agent_type dead; do
+    (( idx++ ))
+    local label="$title ($agent_type)"
+    [[ "$dead" == "1" ]] && label="$title ($agent_type) [dead]"
+    # Use pane_id directly to avoid context-dependent name lookup
+    menu_args+=("$label" "$idx" "run-shell '$self _kill_pane $pane_id'")
+  done < <(tmux list-panes -F $'#{pane_id}\t#{@amux-name}\t#{@amux-type}\t#{pane_dead}' -f '#{@amux-agent}' 2>/dev/null)
+
+  (( ${#menu_args[@]} > 0 )) && tmux display-menu -T " Kill Agent " "${menu_args[@]}"
+}
+
+cmd__kill_pane() {
+  local pane="$1"
+  [[ -z "$pane" ]] && return 1
+  tmux send-keys -t "$pane" "/exit" Enter 2>/dev/null
+  ( sleep 3 && tmux kill-pane -t "$pane" 2>/dev/null ) &!
 }
 
 cmd__kill_current() {
@@ -565,6 +598,8 @@ main() {
     _create)        cmd__create "$@" ;;
     _pick)          cmd__pick "$@" ;;
     _kill_current)    cmd__kill_current "$@" ;;
+    _kill_pick)       cmd__kill_pick "$@" ;;
+    _kill_pane)       cmd__kill_pane "$@" ;;
     _rename_current)  cmd__rename_current "$@" ;;
     _log_current)     cmd__log_current "$@" ;;
     _respawn_current) cmd__respawn_current "$@" ;;
