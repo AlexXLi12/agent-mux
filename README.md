@@ -36,28 +36,21 @@ Resume flows are implemented for:
 
 ## Install
 
-### Quick Install
+Add the plugin to your `~/.tmux.conf` (or `~/.config/tmux/tmux.conf`):
 
-```bash
-git clone <repo-url> ~/Coding/agent-mux
-cd ~/Coding/agent-mux
-./install.sh
-source ~/.zshrc
-tmux source-file ~/.config/tmux/tmux.conf
+```tmux
+set -g @plugin 'AlexXLi12/agent-mux'
 ```
 
-The installer:
+Then press `prefix + I` to install, or reload your config and restart tmux.
 
-- makes `bin/amux` executable
-- adds `bin/` to your `PATH`
-- adds `completions/` to your `fpath`
-- sources the tmux bindings from your `~/.config/tmux/tmux.conf`
+To get the `amux` CLI on your `PATH` and zsh completions, add to `~/.zshrc`:
 
-### Path Behavior
-
-The bundled [tmux/amux.tmux.conf](tmux/amux.tmux.conf) uses a tmux option, `@amux-bin`, that the installer points at your repo checkout.
-
-That means the repo can live anywhere, as long as you run `./install.sh` so your shell and tmux config know where to find it.
+```bash
+# amux - agent multiplexer (adjust path if TPM plugins dir differs)
+export PATH="$HOME/.tmux/plugins/agent-mux/bin:$PATH"
+fpath=("$HOME/.tmux/plugins/agent-mux/completions" $fpath)
+```
 
 ## Usage
 
@@ -152,9 +145,21 @@ amux scratch -- codex
 
 This opens an ephemeral tmux popup. By default it launches `claude`.
 
+## Configuration
+
+All keybindings are configurable via tmux options. Set these in your `tmux.conf` before the plugin is loaded:
+
+```tmux
+set -g @amux-picker-key 'a'     # default: a (prefix table)
+set -g @amux-new-key 'A'        # default: A (prefix table)
+set -g @amux-next-key 'M-]'     # default: M-] (root table)
+set -g @amux-prev-key 'M-['     # default: M-[ (root table)
+set -g @amux-scratch-key 'M-a'  # default: M-a (root table)
+```
+
 ## Tmux Keybindings
 
-The shipped bindings are defined in [tmux/amux.tmux.conf](tmux/amux.tmux.conf):
+The default bindings are:
 
 - `prefix a`: open the agent picker
 - `prefix A`: open the new-agent menu
@@ -191,22 +196,13 @@ If you pass `--resume` for a type without a configured resume command, `amux` ex
 
 ## Shell Completion
 
-zsh completion is included in [completions/_amux](completions/_amux).
-
-The installer adds the completions directory to `fpath` through `~/.zshrc`.
+zsh completion is included in [completions/_amux](completions/_amux). The `fpath` line in the install instructions above enables it.
 
 ## Uninstall
 
-```bash
-./uninstall.sh
-source ~/.zshrc
-tmux source-file ~/.config/tmux/tmux.conf
-```
-
-This removes the `PATH` / `fpath` entries plus the tmux `@amux-bin` and `source-file` lines added by the installer.
+Remove the `@plugin` line from your `tmux.conf`, then press `prefix + alt + u` (TPM uninstall) or delete `~/.tmux/plugins/agent-mux`. Remove the `PATH`/`fpath` lines from `~/.zshrc`.
 
 ## Notes
 
-- The install and uninstall scripts are intended to work on both macOS and Linux.
 - The tool operates per tmux window. `amux ls`, `next`, `prev`, and picker actions only inspect panes marked as agents in the current window.
 - Window titles are updated to the active agent name plus its position, for example `reviewer [2/4]`.
