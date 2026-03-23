@@ -10,6 +10,7 @@ _amux() {
     'go:Switch to agent by name'
     'kill:Kill agent(s)'
     'rename:Rename agent'
+    'move:Reorder agent'
     'scratch:Popup scratch agent'
     'send:Send keys to agent'
     'respawn:Restart dead agent'
@@ -28,6 +29,14 @@ _amux() {
       ;;
     args)
       case ${words[2]} in
+        move)
+          if (( CURRENT == 3 )); then
+            _describe 'agent' agents
+          elif (( CURRENT == 4 )); then
+            local -a dirs=('up:Move earlier in order' 'down:Move later in order')
+            _describe 'direction' dirs
+          fi
+          ;;
         go|send|respawn|log)
           _describe 'agent' agents
           ;;
@@ -47,7 +56,6 @@ _amux() {
           _arguments \
             '--type[Agent type]:type:(claude codex opencode cursor)' \
             '--name[Agent name]:name:' \
-            '--prompt[Pre-seed prompt]:prompt:' \
             '--trust[Auto-approve mode]' \
             '--resume[Resume previous session]'
           ;;

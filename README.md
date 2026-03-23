@@ -61,7 +61,6 @@ amux new --type codex
 amux new --type claude --name reviewer
 amux new --type claude --trust
 amux new --type codex --resume
-amux new --type claude --prompt "review the failing tests"
 ```
 
 Behavior:
@@ -110,6 +109,15 @@ This forwards keys through `tmux send-keys`.
 ```bash
 amux rename reviewer planner
 ```
+
+### Reorder Agents
+
+```bash
+amux move reviewer up
+amux move reviewer down
+```
+
+This swaps the agent with its neighbor in the pane order, affecting `next`/`prev` cycling and the picker list.
 
 ### Kill Agents
 
