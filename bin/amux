@@ -52,9 +52,21 @@ _name_exists() {
   [[ -n "$(_find_pane "$name")" ]]
 }
 
+_is_known_option() {
+  local token="${1:-}"
+  case "$token" in
+    --type|--name|--prompt|--resume|--trust|--dir|--target|--)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 _require_value() {
   local flag="$1" value="${2-}"
-  if [[ -z "$value" || "$value" == --* ]]; then
+  if [[ -z "$value" ]] || _is_known_option "$value"; then
     echo "Error: $flag requires a value" >&2
     return 1
   fi
@@ -332,7 +344,7 @@ cmd_rename() {
   fi
 
   tmux set-option -p -t "$pane" @amux-name "$new"
-  _update_window_name "$pane"
+  _update_window_name
 }
 
 cmd_scratch() {

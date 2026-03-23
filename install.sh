@@ -4,6 +4,8 @@ set -euo pipefail
 AMUX_DIR="$(cd "$(dirname "$0")" && pwd)"
 ZSHRC="$HOME/.zshrc"
 TMUX_CONF="$HOME/.config/tmux/tmux.conf"
+AMUX_BIN_LINE="set -g @amux-bin $AMUX_DIR/bin/amux"
+AMUX_SOURCE_LINE="source-file $AMUX_DIR/tmux/amux.tmux.conf"
 
 portable_sed_inplace() {
   local script="$1" file="$2"
@@ -36,26 +38,28 @@ else
   echo "[skip] PATH already configured in $ZSHRC"
 fi
 
-# Source tmux config
-if ! grep -qF "$AMUX_DIR/tmux/amux.tmux.conf" "$TMUX_CONF" 2>/dev/null; then
-  if grep -q "run.*tpm/tpm" "$TMUX_CONF" 2>/dev/null; then
-    # Insert before the TPM run line
-    portable_sed_inplace "/run.*tpm\\/tpm/i\\
+# Refresh tmux config
+portable_sed_inplace '/# amux - agent multiplexer/d' "$TMUX_CONF"
+portable_sed_inplace '/@amux-bin/d' "$TMUX_CONF"
+portable_sed_inplace '/amux.tmux.conf/d' "$TMUX_CONF"
+
+if grep -q "run.*tpm/tpm" "$TMUX_CONF" 2>/dev/null; then
+  # Insert before the TPM run line
+  portable_sed_inplace "/run.*tpm\\/tpm/i\\
 \\
 # amux - agent multiplexer\\
-source-file $AMUX_DIR/tmux/amux.tmux.conf
+$AMUX_BIN_LINE\\
+$AMUX_SOURCE_LINE
 " "$TMUX_CONF"
-  else
-    {
-      echo ""
-      echo "# amux - agent multiplexer"
-      echo "source-file $AMUX_DIR/tmux/amux.tmux.conf"
-    } >> "$TMUX_CONF"
-  fi
-  echo "[ok] Added source-file to $TMUX_CONF"
 else
-  echo "[skip] tmux config already configured in $TMUX_CONF"
+  {
+    echo ""
+    echo "# amux - agent multiplexer"
+    echo "$AMUX_BIN_LINE"
+    echo "$AMUX_SOURCE_LINE"
+  } >> "$TMUX_CONF"
 fi
+echo "[ok] Refreshed tmux config in $TMUX_CONF"
 
 echo ""
 echo "Done! To activate now:"

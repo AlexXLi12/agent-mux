@@ -55,7 +55,7 @@ The installer:
 
 ### Path Behavior
 
-The bundled [tmux/amux.tmux.conf](tmux/amux.tmux.conf) uses `amux` from your `PATH`.
+The bundled [tmux/amux.tmux.conf](tmux/amux.tmux.conf) uses a tmux option, `@amux-bin`, that the installer points at your repo checkout.
 
 That means the repo can live anywhere, as long as you run `./install.sh` so your shell and tmux config know where to find it.
 
@@ -203,7 +203,7 @@ source ~/.zshrc
 tmux source-file ~/.config/tmux/tmux.conf
 ```
 
-This removes the `PATH` / `fpath` entries and the tmux `source-file` line added by the installer.
+This removes the `PATH` / `fpath` entries plus the tmux `@amux-bin` and `source-file` lines added by the installer.
 
 ## Notes
 

@@ -29,6 +29,7 @@ fi
 
 # Remove from tmux config
 if grep -qF "$AMUX_DIR/tmux/amux.tmux.conf" "$TMUX_CONF" 2>/dev/null; then
+  portable_sed_inplace '/@amux-bin/d' "$TMUX_CONF"
   portable_sed_inplace "\\|$AMUX_DIR/tmux/amux.tmux.conf|d" "$TMUX_CONF"
   portable_sed_inplace '/# amux - agent multiplexer/d' "$TMUX_CONF"
   echo "[ok] Removed source-file from $TMUX_CONF"
