@@ -1,5 +1,11 @@
 #!/usr/bin/env zsh
 # amux - terminal-native agent sub-tabs for tmux
+#
+# Each home window holds exactly one agent pane (no source pane, no zoom).
+# Inactive agents live in a hidden stash session (_amux_<session>), each
+# in its own window.  Switching uses swap-pane -- only two panes resize
+# and nothing appears in the main status bar.  When all agents die the
+# home window simply closes.
 set -uo pipefail
 
 AMUX_BIN="${0:A}"
@@ -23,44 +29,120 @@ AGENT_RESUME=(
 
 # --- Helpers ---
 
+_home_window() {
+  tmux display -p '#{window_id}'
+}
+
+# Return the focused agent pane in the home window (if any).
+_active_agent_pane() {
+  local p
+  p=$(tmux list-panes -F '#{pane_id}' -f '#{&&:#{@amux-agent},#{pane_active}}' 2>/dev/null | head -1)
+  [[ -z "$p" ]] && p=$(tmux list-panes -F '#{pane_id}' -f '#{@amux-agent}' 2>/dev/null | head -1)
+  [[ -n "$p" ]] && echo "$p"
+  return 0
+}
+
+# --- Stash session ---
+# Inactive panes live in a detached session named _amux_<session>.
+# Each pane gets its own window so stashing never resizes siblings.
+# The session auto-destroys when the last pane leaves.
+
+_stash_session_name() {
+  local main=$(tmux display -p '#{session_name}')
+  echo "_amux_${main}"
+}
+
+# Create a new pane running $cmd in the stash session and return its ID.
+# Creates the stash session on first call.
+_create_in_stash() {
+  local work_dir="$1" cmd="$2"
+  local stash=$(_stash_session_name)
+
+  if tmux has-session -t "=$stash" 2>/dev/null; then
+    tmux new-window -d -t "=$stash:" -c "$work_dir" -P -F '#{pane_id}' "$cmd"
+  else
+    local w=$(tmux display -p '#{window_width}')
+    local h=$(tmux display -p '#{window_height}')
+    tmux new-session -d -s "$stash" -x "$w" -y "$h" -c "$work_dir" -P -F '#{pane_id}' "$cmd"
+  fi
+}
+
+# Swap active agent with target (in stash). No zoom needed -- each
+# window holds exactly one pane.
+_switch_to() {
+  local target="$1"
+  local active=$(_active_agent_pane)
+  [[ "$active" == "$target" ]] && return 0
+
+  # If target is already in the home window just select it
+  local target_win=$(tmux display -t "$target" -p '#{window_id}' 2>/dev/null)
+  local home=$(_home_window)
+  if [[ "$target_win" == "$home" ]]; then
+    tmux select-pane -t "$target"
+    _update_window_name "$target"
+    return 0
+  fi
+
+  # Swap panes across sessions -- active goes to stash, target comes home
+  if [[ -n "$active" ]]; then
+    tmux swap-pane -s "$active" -t "$target"
+    tmux select-window -t "$home"
+    tmux select-pane -t "$target"
+  fi
+  _update_window_name "$target"
+  return 0
+}
+
+# --- Ordering & naming ---
+
+_next_order() {
+  local max=0 home=$(_home_window)
+  local order amux_win actual_win
+  while IFS=$'\t' read -r order amux_win actual_win; do
+    local win="${amux_win:-$actual_win}"
+    [[ "$win" != "$home" ]] && continue
+    [[ -n "$order" ]] && (( order > max )) && max=$order
+  done < <(tmux list-panes -a -F $'#{@amux-order}\t#{@amux-window}\t#{window_id}' -f '#{@amux-agent}' 2>/dev/null)
+  echo $(( max + 1 ))
+}
+
 _next_name() {
-  local max=0
-  local line
-  while IFS= read -r line; do
-    if [[ "$line" =~ ^agent-([0-9]+)$ ]]; then
+  local max=0 home=$(_home_window)
+  local name amux_win actual_win
+  while IFS=$'\t' read -r name amux_win actual_win; do
+    local win="${amux_win:-$actual_win}"
+    [[ "$win" != "$home" ]] && continue
+    if [[ "$name" =~ ^agent-([0-9]+)$ ]]; then
       local n=${match[1]}
       (( n > max )) && max=$n
     fi
-  done < <(tmux list-panes -F '#{@amux-name}' -f '#{@amux-agent}' 2>/dev/null)
+  done < <(tmux list-panes -a -F $'#{@amux-name}\t#{@amux-window}\t#{window_id}' -f '#{@amux-agent}' 2>/dev/null)
   echo "agent-$(( max + 1 ))"
 }
 
 _find_pane() {
-  local name="$1"
-  local pane_id pane_name
-  while IFS=$'\t' read -r pane_id pane_name; do
-    if [[ "$pane_name" == "$name" ]]; then
+  local name="$1" home=$(_home_window)
+  local pane_id pane_name amux_win actual_win
+  while IFS=$'\t' read -r pane_id pane_name amux_win actual_win; do
+    local win="${amux_win:-$actual_win}"
+    if [[ "$pane_name" == "$name" && "$win" == "$home" ]]; then
       echo "$pane_id"
       return 0
     fi
-  done < <(tmux list-panes -F $'#{pane_id}\t#{@amux-name}' -f '#{@amux-agent}' 2>/dev/null)
+  done < <(tmux list-panes -a -F $'#{pane_id}\t#{@amux-name}\t#{@amux-window}\t#{window_id}' -f '#{@amux-agent}' 2>/dev/null)
   return 1
 }
 
 _name_exists() {
-  local name="$1"
-  [[ -n "$(_find_pane "$name")" ]]
+  [[ -n "$(_find_pane "$1")" ]]
 }
 
 _is_known_option() {
-  local token="${1:-}"
-  case "$token" in
+  case "${1:-}" in
     --type|--name|--resume|--trust|--dir|--target|--)
-      return 0
-      ;;
+      return 0 ;;
     *)
-      return 1
-      ;;
+      return 1 ;;
   esac
 }
 
@@ -72,11 +154,25 @@ _require_value() {
   fi
 }
 
+# All agent pane IDs for a home window, sorted by order.
+# Uses list-panes -a to find panes across both main and stash sessions.
+# Legacy panes (missing @amux-window) fall back to their actual window.
 _agent_pane_ids() {
-  tmux list-panes -F '#{pane_id}' -f '#{@amux-agent}' 2>/dev/null
+  local home="${1:-$(_home_window)}"
+  local pane_id order amux_win actual_win
+  local -a items=()
+  while IFS=$'\t' read -r pane_id order amux_win actual_win; do
+    local win="${amux_win:-$actual_win}"
+    [[ "$win" != "$home" ]] && continue
+    items+=("${order:-0}:$pane_id")
+  done < <(tmux list-panes -a -F $'#{pane_id}\t#{@amux-order}\t#{@amux-window}\t#{window_id}' -f '#{@amux-agent}' 2>/dev/null)
+  (( ${#items[@]} == 0 )) && return 0
+  printf '%s\n' "${items[@]}" | sort -t: -k1 -n | cut -d: -f2
 }
 
-# Accept optional target pane ID; defaults to current pane
+# Accept optional target pane ID; defaults to current pane.
+# Derives the home window from the target so this works correctly
+# even when called right after swap-pane.
 _update_window_name() {
   local target="${1:-}"
   local t_flag=()
@@ -84,6 +180,13 @@ _update_window_name() {
 
   local is_agent=$(tmux display "${t_flag[@]}" -p '#{@amux-agent}' 2>/dev/null)
   [[ "$is_agent" != "1" ]] && return 0
+
+  # Derive home window: prefer @amux-window metadata, fall back to actual
+  local home
+  if [[ -n "$target" ]]; then
+    home=$(tmux display -t "$target" -p '#{@amux-window}' 2>/dev/null)
+    [[ -z "$home" ]] && home=$(tmux display -t "$target" -p '#{window_id}' 2>/dev/null)
+  fi
 
   local current=$(tmux display "${t_flag[@]}" -p '#{@amux-name}')
   local current_id=$(tmux display "${t_flag[@]}" -p '#{pane_id}')
@@ -93,9 +196,11 @@ _update_window_name() {
     (( total++ ))
     (( i++ ))
     [[ "$pid" == "$current_id" ]] && idx=$i
-  done < <(_agent_pane_ids)
+  done < <(_agent_pane_ids ${home:+"$home"})
 
-  (( total > 0 && idx > 0 )) && tmux rename-window "$current [$idx/$total]"
+  if (( total > 0 && idx > 0 )); then
+    tmux rename-window "${t_flag[@]}" "$current [$idx/$total]"
+  fi
 }
 
 # --- Core commands ---
@@ -151,54 +256,77 @@ cmd_new() {
     return 1
   fi
 
-  # Build split-window args
-  local -a split_args=()
-  [[ -n "$target" ]] && split_args+=(-t "$target")
-  split_args+=(-c "$work_dir")
+  local home_win=$(_home_window)
+  local active=$(_active_agent_pane)
+  # Capture current pane NOW, before _create_in_stash may shift server context
+  local current_pane=$(tmux display -p '#{pane_id}')
 
-  # Create the pane (split current or target pane)
-  tmux split-window "${split_args[@]}" "$cmd"
+  # Always create the new agent in the stash session
+  local new_pane
+  new_pane=$(_create_in_stash "$work_dir" "$cmd")
 
-  # Now the new pane is active - set metadata
-  local new_pane=$(tmux display -p '#{pane_id}')
-  tmux set-option -p @amux-agent 1
-  tmux set-option -p @amux-name "$name"
-  tmux set-option -p @amux-type "${type%-trust}"
+  # Set metadata on the new pane
+  tmux set-option -p -t "$new_pane" @amux-agent 1
+  tmux set-option -p -t "$new_pane" @amux-name "$name"
+  tmux set-option -p -t "$new_pane" @amux-type "${type%-trust}"
+  tmux set-option -p -t "$new_pane" @amux-window "$home_win"
+  tmux set-option -p -t "$new_pane" @amux-order "$(_next_order)"
 
   # Show agent name as pane border title
-  tmux set-option -p pane-border-status top
-  tmux set-option -p pane-border-format " #{@amux-name} (#{@amux-type}) "
+  tmux set-option -p -t "$new_pane" pane-border-status top
+  tmux set-option -p -t "$new_pane" pane-border-format " #{@amux-name} (#{@amux-type}) "
 
-  # Zoom the agent pane over the source — keep the source shell alive so the
-  # window survives after all agents are killed.
+  # Keep dead panes alive so the window survives, then auto-swap next agent in
+  tmux set-option -p -t "$new_pane" remain-on-exit on
+  tmux set-hook -p -t "$new_pane" pane-died "run-shell '$AMUX_BIN _pane_died #{pane_id}'"
+
+  # Swap out whatever is in the home window (agent or original shell)
+  local swap_out="${active:-$current_pane}"
+
+  # If swapping out the original shell, tag it so we can restore it later
+  if [[ -z "$active" ]]; then
+    tmux set-option -p -t "$swap_out" @amux-shell "$home_win"
+  fi
+
+  tmux swap-pane -s "$swap_out" -t "$new_pane"
+
+  # After swap, focus may follow the old pane into the stash.
+  # Explicitly switch back to the home window and select the new agent.
+  tmux select-window -t "$home_win"
   tmux select-pane -t "$new_pane"
-  tmux resize-pane -Z
 
   # Update window name
-  _update_window_name
+  _update_window_name "$new_pane"
 }
 
 cmd_ls() {
-  local active_pane=$(tmux display -p '#{pane_id}' 2>/dev/null)
+  local active=$(_active_agent_pane)
   local found=false
 
   printf "  %-15s %-10s %-10s %-8s\n" "NAME" "TYPE" "STATE" "PID"
 
-  local pane_id title agent_type dead dead_status pid
-  while IFS=$'\t' read -r pane_id title agent_type dead dead_status pid; do
+  local pid
+  while IFS= read -r pid; do
     found=true
     local marker=" "
-    [[ "$pane_id" == "$active_pane" ]] && marker="*"
+    [[ "$pid" == "$active" ]] && marker="*"
+
+    local title=$(tmux display -t "$pid" -p '#{@amux-name}')
+    local agent_type=$(tmux display -t "$pid" -p '#{@amux-type}')
+    local dead=$(tmux display -t "$pid" -p '#{pane_dead}')
+    local dead_status=$(tmux display -t "$pid" -p '#{pane_dead_status}')
+    local pane_pid=$(tmux display -t "$pid" -p '#{pane_pid}')
 
     local state="running"
-    [[ "$dead" == "1" ]] && state="dead($dead_status)"
-    [[ "$dead" == "1" ]] && pid="-"
+    [[ "$dead" == "1" ]] && { state="dead($dead_status)"; pane_pid="-"; }
     [[ -z "$agent_type" ]] && agent_type="?"
 
-    printf "%s %-15s %-10s %-10s %-8s\n" "$marker" "$title" "$agent_type" "$state" "$pid"
-  done < <(tmux list-panes -F $'#{pane_id}\t#{@amux-name}\t#{@amux-type}\t#{pane_dead}\t#{pane_dead_status}\t#{pane_pid}' -f '#{@amux-agent}' 2>/dev/null)
+    printf "%s %-15s %-10s %-10s %-8s\n" "$marker" "$title" "$agent_type" "$state" "$pane_pid"
+  done < <(_agent_pane_ids)
 
-  [[ "$found" == false ]] && echo "  (no agents)"
+  if [[ "$found" == false ]]; then
+    echo "  (no agents)"
+  fi
 }
 
 cmd_next() {
@@ -206,31 +334,24 @@ cmd_next() {
   local output=$(_agent_pane_ids)
   [[ -z "$output" ]] && return 0
   panes=("${(@f)output}")
+  (( ${#panes[@]} <= 1 )) && return 0
 
-  local current=$(tmux display -p '#{pane_id}')
+  local current=$(_active_agent_pane)
+  [[ -z "$current" ]] && current=$(tmux display -p '#{pane_id}')
+
   local idx=0
-
   for (( i = 1; i <= ${#panes[@]}; i++ )); do
-    if [[ "${panes[$i]}" == "$current" ]]; then
-      idx=$i
-      break
-    fi
+    [[ "${panes[$i]}" == "$current" ]] && { idx=$i; break; }
   done
 
   local next_idx
   if (( idx == 0 )); then
     next_idx=1
   else
-    # Only 1 agent - nothing to cycle to
-    (( ${#panes[@]} == 1 )) && return 0
     next_idx=$(( (idx % ${#panes[@]}) + 1 ))
   fi
 
-  local target="${panes[$next_idx]}"
-  local was_zoomed=$(tmux display -t "$target" -p '#{window_zoomed_flag}' 2>/dev/null)
-  tmux select-pane -t "$target" -Z
-  [[ "$was_zoomed" != "1" ]] && tmux resize-pane -t "$target" -Z
-  _update_window_name
+  _switch_to "${panes[$next_idx]}"
 }
 
 cmd_prev() {
@@ -238,31 +359,24 @@ cmd_prev() {
   local output=$(_agent_pane_ids)
   [[ -z "$output" ]] && return 0
   panes=("${(@f)output}")
+  (( ${#panes[@]} <= 1 )) && return 0
 
-  local current=$(tmux display -p '#{pane_id}')
+  local current=$(_active_agent_pane)
+  [[ -z "$current" ]] && current=$(tmux display -p '#{pane_id}')
+
   local idx=0
-
   for (( i = 1; i <= ${#panes[@]}; i++ )); do
-    if [[ "${panes[$i]}" == "$current" ]]; then
-      idx=$i
-      break
-    fi
+    [[ "${panes[$i]}" == "$current" ]] && { idx=$i; break; }
   done
 
   local prev_idx
   if (( idx == 0 )); then
     prev_idx=${#panes[@]}
   else
-    # Only 1 agent - nothing to cycle to
-    (( ${#panes[@]} == 1 )) && return 0
     prev_idx=$(( ((idx - 2 + ${#panes[@]}) % ${#panes[@]}) + 1 ))
   fi
 
-  local target="${panes[$prev_idx]}"
-  local was_zoomed=$(tmux display -t "$target" -p '#{window_zoomed_flag}' 2>/dev/null)
-  tmux select-pane -t "$target" -Z
-  [[ "$was_zoomed" != "1" ]] && tmux resize-pane -t "$target" -Z
-  _update_window_name
+  _switch_to "${panes[$prev_idx]}"
 }
 
 cmd_go() {
@@ -272,10 +386,7 @@ cmd_go() {
   local pane=$(_find_pane "$name")
   [[ -z "$pane" ]] && { echo "Error: agent '$name' not found" >&2; return 1; }
 
-  local was_zoomed=$(tmux display -t "$pane" -p '#{window_zoomed_flag}' 2>/dev/null)
-  tmux select-pane -t "$pane" -Z || { echo "Error: failed to switch to '$name' ($pane)" >&2; return 1; }
-  [[ "$was_zoomed" != "1" ]] && tmux resize-pane -t "$pane" -Z
-  _update_window_name "$pane"
+  _switch_to "$pane"
 }
 
 cmd_kill() {
@@ -296,14 +407,21 @@ cmd_kill() {
     done < <(_agent_pane_ids)
 
   elif [[ "$target" == "--dead" ]]; then
-    local pane_id dead
-    while IFS=$'\t' read -r pane_id dead; do
-      [[ "$dead" == "1" ]] && tmux kill-pane -t "$pane_id" 2>/dev/null
-    done < <(tmux list-panes -F $'#{pane_id}\t#{pane_dead}' -f '#{@amux-agent}' 2>/dev/null)
+    local pid
+    while IFS= read -r pid; do
+      local dead=$(tmux display -t "$pid" -p '#{pane_dead}' 2>/dev/null)
+      [[ "$dead" == "1" ]] && tmux kill-pane -t "$pid" 2>/dev/null
+    done < <(_agent_pane_ids)
 
   elif [[ -n "$target" ]]; then
     local pane=$(_find_pane "$target")
     [[ -z "$pane" ]] && { echo "Error: agent '$target' not found" >&2; return 1; }
+
+    # If killing the active agent and others exist, swap to next first
+    local active=$(_active_agent_pane)
+    if [[ "$pane" == "$active" ]]; then
+      cmd_next 2>/dev/null
+    fi
 
     tmux send-keys -t "$pane" "/exit" Enter 2>/dev/null
 
@@ -361,12 +479,10 @@ cmd_move() {
   local swap_idx
   case "$direction" in
     up)
-      (( idx <= 1 )) && { echo "Error: already first" >&2; return 1; }
-      swap_idx=$(( idx - 1 ))
+      swap_idx=$(( ((idx - 2 + ${#panes[@]}) % ${#panes[@]}) + 1 ))
       ;;
     down)
-      (( idx >= ${#panes[@]} )) && { echo "Error: already last" >&2; return 1; }
-      swap_idx=$(( idx + 1 ))
+      swap_idx=$(( (idx % ${#panes[@]}) + 1 ))
       ;;
     *)
       echo "Error: direction must be 'up' or 'down'" >&2
@@ -374,17 +490,47 @@ cmd_move() {
       ;;
   esac
 
-  tmux swap-pane -d -s "$pane" -t "${panes[$swap_idx]}"
+  # Swap order values (panes may be in different sessions now)
+  local order_a=$(tmux display -t "$pane" -p '#{@amux-order}')
+  local order_b=$(tmux display -t "${panes[$swap_idx]}" -p '#{@amux-order}')
+  tmux set-option -p -t "$pane" @amux-order "$order_b"
+  tmux set-option -p -t "${panes[$swap_idx]}" @amux-order "$order_a"
+
   _update_window_name "$pane"
 }
 
 cmd_scratch() {
-  local cmd="claude"
-  if [[ "${1:-}" == "--" ]]; then
-    shift
-    cmd="$*"
+  if [[ $# -eq 0 ]]; then
+    # Interactive: show agent picker for scratch popup
+    cmd__scratch_menu
+    return
   fi
-  tmux display-popup -E -w 85% -h 85% -b rounded -T " scratch " "$cmd"
+
+  local type="$1"; shift
+  local trust=false
+
+  # Parse optional flags
+  while (( $# > 0 )); do
+    case "$1" in
+      --trust) trust=true; shift ;;
+      --)      shift; break ;;
+      *)       break ;;
+    esac
+  done
+
+  local cmd
+  if (( $# > 0 )); then
+    # Raw command after --
+    cmd="$*"
+  else
+    if [[ "$trust" == true && "$type" == "claude" ]]; then
+      type="claude-trust"
+    fi
+    cmd="${AGENT_CMD[$type]:-}"
+    [[ -z "$cmd" ]] && { echo "Error: unknown agent type: $type" >&2; return 1; }
+  fi
+
+  tmux display-popup -E -w 85% -h 85% -b rounded -T " scratch ($type) " "$cmd"
 }
 
 cmd_send() {
@@ -425,6 +571,19 @@ cmd_log() {
 
 # --- Internal commands (used by tmux keybindings) ---
 
+cmd__scratch_menu() {
+  local self="$AMUX_BIN"
+
+  tmux display-menu -T " Scratch Agent " \
+    "claude"                c "run-shell '$self scratch claude'" \
+    "claude (auto-approve)" p "run-shell '$self scratch claude --trust'" \
+    ""                      "" "" \
+    "codex"                 x "run-shell '$self scratch codex'" \
+    ""                      "" "" \
+    "opencode"              o "run-shell '$self scratch opencode'" \
+    "cursor agent"          u "run-shell '$self scratch cursor'"
+}
+
 cmd__menu() {
   local work_dir="${1:-$(tmux display -p '#{pane_current_path}' 2>/dev/null || echo "$PWD")}"
   local self="$AMUX_BIN"
@@ -456,15 +615,20 @@ cmd__pick() {
   local idx=0
   local has_agents=false
   local has_dead=false
+  local active=$(_active_agent_pane)
 
-  local pane_id title agent_type dead
-  while IFS=$'\t' read -r pane_id title agent_type dead; do
+  local pid
+  while IFS= read -r pid; do
     has_agents=true
     (( idx++ ))
+    local title=$(tmux display -t "$pid" -p '#{@amux-name}')
+    local agent_type=$(tmux display -t "$pid" -p '#{@amux-type}')
+    local dead=$(tmux display -t "$pid" -p '#{pane_dead}')
     local label="$title ($agent_type)"
-    [[ "$dead" == "1" ]] && { label="$title ($agent_type) [dead]"; has_dead=true; }
+    [[ "$pid" == "$active" ]] && label="* $label"
+    [[ "$dead" == "1" ]] && { label="$label [dead]"; has_dead=true; }
     menu_args+=("$label" "$idx" "run-shell '$self go \"$title\"'")
-  done < <(tmux list-panes -F $'#{pane_id}\t#{@amux-name}\t#{@amux-type}\t#{pane_dead}' -f '#{@amux-agent}' 2>/dev/null)
+  done < <(_agent_pane_ids)
 
   local work_dir=$(tmux display -p '#{pane_current_path}' 2>/dev/null || echo "$PWD")
 
@@ -499,14 +663,16 @@ cmd__kill_pick() {
   local -a menu_args=()
   local idx=0
 
-  local pane_id title agent_type dead
-  while IFS=$'\t' read -r pane_id title agent_type dead; do
+  local pid
+  while IFS= read -r pid; do
     (( idx++ ))
+    local title=$(tmux display -t "$pid" -p '#{@amux-name}')
+    local agent_type=$(tmux display -t "$pid" -p '#{@amux-type}')
+    local dead=$(tmux display -t "$pid" -p '#{pane_dead}')
     local label="$title ($agent_type)"
-    [[ "$dead" == "1" ]] && label="$title ($agent_type) [dead]"
-    # Use pane_id directly to avoid context-dependent name lookup
-    menu_args+=("$label" "$idx" "run-shell '$self _kill_pane $pane_id'")
-  done < <(tmux list-panes -F $'#{pane_id}\t#{@amux-name}\t#{@amux-type}\t#{pane_dead}' -f '#{@amux-agent}' 2>/dev/null)
+    [[ "$dead" == "1" ]] && label="$label [dead]"
+    menu_args+=("$label" "$idx" "run-shell '$self _kill_pane $pid'")
+  done < <(_agent_pane_ids)
 
   (( ${#menu_args[@]} > 0 )) && tmux display-menu -T " Kill Agent " "${menu_args[@]}"
 }
@@ -519,6 +685,49 @@ cmd__kill_pane() {
   ( sleep 3 && tmux kill-pane -t "$pane" 2>/dev/null; "$self" _update_name 2>/dev/null ) &!
 }
 
+cmd__pane_died() {
+  local dead_pane="${1:-$(tmux display -p '#{pane_id}' 2>/dev/null)}"
+  [[ -z "$dead_pane" ]] && return 0
+
+  # Find an alive agent to swap in
+  local alive=""
+  local pid
+  while IFS= read -r pid; do
+    [[ "$pid" == "$dead_pane" ]] && continue
+    local d=$(tmux display -t "$pid" -p '#{pane_dead}' 2>/dev/null)
+    if [[ "$d" != "1" ]]; then
+      alive="$pid"
+      break
+    fi
+  done < <(_agent_pane_ids)
+
+  if [[ -n "$alive" ]]; then
+    # Swap the alive agent into the home window, then kill the dead pane
+    _switch_to "$alive"
+    tmux kill-pane -t "$dead_pane" 2>/dev/null
+  else
+    # Last agent -- restore the original shell if we stashed one
+    local home=$(_home_window)
+    local shell_pane=""
+    local sp sw
+    while IFS=$'\t' read -r sp sw; do
+      if [[ "$sw" == "$home" ]]; then
+        shell_pane="$sp"
+        break
+      fi
+    done < <(tmux list-panes -a -F $'#{pane_id}\t#{@amux-shell}' -f '#{@amux-shell}' 2>/dev/null)
+
+    if [[ -n "$shell_pane" ]]; then
+      tmux swap-pane -s "$dead_pane" -t "$shell_pane"
+      tmux kill-pane -t "$dead_pane" 2>/dev/null
+      tmux set-option -pu -t "$shell_pane" @amux-shell
+    else
+      # No original shell found -- respawn a fresh one
+      tmux respawn-pane -k -t "$dead_pane"
+    fi
+  fi
+}
+
 cmd__kill_current() {
   local is_agent=$(tmux display -p '#{@amux-agent}' 2>/dev/null)
   if [[ "$is_agent" == "1" ]]; then
@@ -529,6 +738,7 @@ cmd__kill_current() {
     tmux send-keys -t "$current" "/exit" Enter 2>/dev/null
     ( sleep 3 && tmux kill-pane -t "$current" 2>/dev/null; "$self" _update_name 2>/dev/null ) &!
   fi
+  return 0
 }
 
 cmd__move_current() {
@@ -538,6 +748,7 @@ cmd__move_current() {
     local name=$(tmux display -p '#{@amux-name}' 2>/dev/null)
     cmd_move "$name" "$direction" 2>/dev/null
   fi
+  return 0
 }
 
 cmd__rename_current() {
@@ -558,6 +769,7 @@ cmd__rename_current() {
     tmux display-popup -E -w 50% -h 3 -T " Rename agent " \
       "printf '($current_name) > ' && read -r name && [ -n \"\$name\" ] && exec \"$self\" rename \"$current_name\" \"\$name\""
   fi
+  return 0
 }
 
 cmd__log_current() {
@@ -568,6 +780,7 @@ cmd__log_current() {
     tmux display-popup -E -w 85% -h 85% -T " log: $title " \
       "tmux capture-pane -t '$pane' -p -S - | less -R"
   fi
+  return 0
 }
 
 cmd__respawn_current() {
@@ -578,6 +791,7 @@ cmd__respawn_current() {
     local cmd="${AGENT_CMD[${agent_type:-claude}]:-claude}"
     tmux respawn-pane -k "$cmd"
   fi
+  return 0
 }
 
 cmd__keybindings() {
@@ -587,15 +801,16 @@ cmd__keybindings() {
 
 cmd__status() {
   local count=0 running=0 dead_count=0
-  local pane_dead
-  while IFS= read -r pane_dead; do
+  local pid
+  while IFS= read -r pid; do
     (( count++ ))
-    if [[ "$pane_dead" == "1" ]]; then
+    local dead=$(tmux display -t "$pid" -p '#{pane_dead}' 2>/dev/null)
+    if [[ "$dead" == "1" ]]; then
       (( dead_count++ ))
     else
       (( running++ ))
     fi
-  done < <(tmux list-panes -F '#{pane_dead}' -f '#{@amux-agent}' 2>/dev/null)
+  done < <(_agent_pane_ids)
 
   if (( count > 0 )); then
     if (( dead_count > 0 )); then
@@ -604,6 +819,7 @@ cmd__status() {
       printf " %d" "$count"
     fi
   fi
+  return 0
 }
 
 # --- Main dispatch ---
@@ -634,6 +850,7 @@ main() {
     _menu)          cmd__menu "$@" ;;
     _create)        cmd__create "$@" ;;
     _pick)          cmd__pick "$@" ;;
+    _pane_died)       cmd__pane_died "$@" ;;
     _kill_current)    cmd__kill_current "$@" ;;
     _kill_pick)       cmd__kill_pick "$@" ;;
     _kill_pane)       cmd__kill_pane "$@" ;;
