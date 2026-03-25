@@ -707,6 +707,8 @@ cmd__pane_died() {
     # Swap the alive agent into the home window, then kill the dead pane
     _switch_to "$alive"
     tmux kill-pane -t "$dead_pane" 2>/dev/null
+    # Update name after kill so the count reflects the removed agent
+    _update_window_name "$alive"
   else
     # Last agent -- restore the original shell if we stashed one
     local home=$(_home_window)
