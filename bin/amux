@@ -272,8 +272,7 @@ cmd_new() {
   tmux set-option -p -t "$new_pane" @amux-window "$home_win"
   tmux set-option -p -t "$new_pane" @amux-order "$(_next_order)"
 
-  # Show agent name as pane border title
-  tmux set-option -p -t "$new_pane" pane-border-status top
+  # Show agent name as pane border title (format is per-pane, status is per-window)
   tmux set-option -p -t "$new_pane" pane-border-format " #{@amux-name} (#{@amux-type}) "
 
   # Keep dead panes alive so the window survives, then auto-swap next agent in
@@ -294,6 +293,9 @@ cmd_new() {
   # Explicitly switch back to the home window and select the new agent.
   tmux select-window -t "$home_win"
   tmux select-pane -t "$new_pane"
+
+  # Enable pane border title on the home window (must be a window option)
+  tmux set-option -w -t "$home_win" pane-border-status top
 
   # Update window name
   _update_window_name "$new_pane"
