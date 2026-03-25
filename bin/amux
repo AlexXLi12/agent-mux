@@ -729,6 +729,10 @@ cmd__pane_died() {
       # No original shell found -- respawn a fresh one
       tmux respawn-pane -k -t "$dead_pane"
     fi
+    # Clear the agent name from the window title
+    tmux set-option -w -t "$home" pane-border-status off 2>/dev/null
+    tmux rename-window -t "$home" "" 2>/dev/null
+    tmux set-option -wu -t "$home" automatic-rename 2>/dev/null
   fi
 }
 
