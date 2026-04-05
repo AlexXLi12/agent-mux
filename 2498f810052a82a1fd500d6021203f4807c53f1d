@@ -1,0 +1,37 @@
+bin/amux
+  43d70da5a14d627a 19,22,224-227,542-545,600,603-605,619,623-625,922
+  0a832e5b870512e7 89,157-178,296-318,657-668,875,898,909
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.2.5",
+  "base_commit_sha": "2498f810052a82a1fd500d6021203f4807c53f1d",
+  "prompts": {
+    "0a832e5b870512e7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "332d5436-705e-4332-968d-315aa81c7abc",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Alex Li",
+      "messages": [],
+      "total_additions": 141,
+      "total_deletions": 88,
+      "accepted_lines": 66,
+      "overriden_lines": 0
+    },
+    "43d70da5a14d627a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3912ba6-5fa1-43a5-873c-01526972a461",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "Alex Li",
+      "messages": [],
+      "total_additions": 19,
+      "total_deletions": 7,
+      "accepted_lines": 19,
+      "overriden_lines": 0
+    }
+  }
+}
