@@ -32,6 +32,14 @@ AGENT_RESUME=(
 # --- Helpers ---
 
 _home_window() {
+  # In run-shell/hook contexts, tmux display -p may return a stash
+  # session's window instead of the user's home window. Check pane
+  # metadata first: agent panes carry @amux-window and stashed shell
+  # panes carry @amux-shell, both pointing to the correct home window.
+  local aw=$(tmux display -p '#{@amux-window}' 2>/dev/null)
+  [[ -n "$aw" ]] && { echo "$aw"; return; }
+  local as=$(tmux display -p '#{@amux-shell}' 2>/dev/null)
+  [[ -n "$as" ]] && { echo "$as"; return; }
   tmux display -p '#{window_id}'
 }
 
@@ -107,7 +115,8 @@ _next_order() {
   while IFS=$'\t' read -r order amux_win actual_win; do
     local win="${amux_win:-$actual_win}"
     [[ "$win" != "$home" ]] && continue
-    [[ -n "$order" ]] && (( order > max )) && max=$order
+    # Guard against non-numeric order values (e.g. from stale metadata)
+    [[ -n "$order" && "$order" == <-> ]] && (( order > max )) && max=$order
   done < <(tmux list-panes -a -F $'#{@amux-order}\t#{@amux-window}\t#{window_id}' -f '#{@amux-agent}' 2>/dev/null)
   echo $(( max + 1 ))
 }
@@ -418,18 +427,71 @@ cmd_kill() {
   local target="${1:-}"
 
   if [[ "$target" == "--all" ]]; then
+    local home=$(_home_window)
+
+    # _home_window() can return the wrong window in run-shell contexts
+    # where tmux display -p lacks proper client context. If no agents
+    # are found for the detected window, fall back to agent metadata.
+    if [[ -z "$(_agent_pane_ids "$home")" ]]; then
+      local _aw
+      _aw=$(tmux list-panes -a -F '#{@amux-window}' -f '#{@amux-agent}' 2>/dev/null | head -1)
+      [[ -n "$_aw" ]] && home="$_aw"
+    fi
+
     local pid
     while IFS= read -r pid; do
       tmux send-keys -t "$pid" "/exit" Enter 2>/dev/null
-    done < <(_agent_pane_ids)
+    done < <(_agent_pane_ids "$home")
 
     # Wait for graceful exit
     sleep 3
 
-    # Force-kill survivors
+    # Collect any agent panes not yet cleaned up by _pane_died
+    local -a remaining=()
     while IFS= read -r pid; do
-      tmux kill-pane -t "$pid" 2>/dev/null
-    done < <(_agent_pane_ids)
+      remaining+=("$pid")
+    done < <(_agent_pane_ids "$home")
+
+    if (( ${#remaining[@]} > 0 )); then
+      # Find the agent pane currently in the home window
+      local home_pane=""
+      for pid in "${remaining[@]}"; do
+        local win=$(tmux display -t "$pid" -p '#{window_id}' 2>/dev/null)
+        if [[ "$win" == "$home" ]]; then
+          home_pane="$pid"
+          break
+        fi
+      done
+
+      # Kill all agents NOT in the home window first
+      for pid in "${remaining[@]}"; do
+        [[ "$pid" == "$home_pane" ]] && continue
+        tmux kill-pane -t "$pid" 2>/dev/null
+      done
+
+      # Restore the original shell pane, then kill the last agent
+      if [[ -n "$home_pane" ]]; then
+        local shell_pane=""
+        local sp sw
+        while IFS=$'\t' read -r sp sw; do
+          if [[ "$sw" == "$home" ]]; then
+            shell_pane="$sp"
+            break
+          fi
+        done < <(tmux list-panes -a -F $'#{pane_id}\t#{@amux-shell}' -f '#{@amux-shell}' 2>/dev/null)
+
+        if [[ -n "$shell_pane" ]]; then
+          tmux swap-pane -s "$home_pane" -t "$shell_pane"
+          tmux kill-pane -t "$home_pane" 2>/dev/null
+          tmux set-option -pu -t "$shell_pane" @amux-shell
+        else
+          # No stashed shell -- respawn a fresh terminal
+          tmux respawn-pane -k -t "$home_pane"
+        fi
+      fi
+
+      tmux set-option -w -t "$home" pane-border-status off 2>/dev/null
+    fi
 
   elif [[ "$target" == "--dead" ]]; then
     local pid
@@ -731,6 +793,12 @@ cmd__pane_died() {
   local dead_pane="${1:-$(tmux display -p '#{pane_id}' 2>/dev/null)}"
   [[ -z "$dead_pane" ]] && return 0
 
+  # Derive the home window from the dead pane's metadata rather than
+  # _home_window(), which uses tmux display -p and may return the wrong
+  # window when called from a pane-died hook's run-shell context.
+  local home=$(tmux display -t "$dead_pane" -p '#{@amux-window}' 2>/dev/null)
+  [[ -z "$home" ]] && home=$(_home_window)
+
   # Find an alive agent to swap in
   local alive=""
   local pid
@@ -741,15 +809,18 @@ cmd__pane_died() {
       alive="$pid"
       break
     fi
-  done < <(_agent_pane_ids)
+  done < <(_agent_pane_ids "$home")
 
   if [[ -n "$alive" ]]; then
-    # Swap the alive agent into the home window, then kill the dead pane
-    _switch_to "$alive"
+    # Swap the alive agent into the home window, then kill the dead pane.
+    # Use swap-pane directly instead of _switch_to, which relies on
+    # _active_agent_pane/_home_window that may fail in hook contexts.
+    tmux swap-pane -s "$dead_pane" -t "$alive"
+    tmux select-window -t "$home"
+    tmux select-pane -t "$alive"
     tmux kill-pane -t "$dead_pane" 2>/dev/null
   else
     # Last agent -- restore the original shell if we stashed one
-    local home=$(_home_window)
     local shell_pane=""
     local sp sw
     while IFS=$'\t' read -r sp sw; do
