@@ -86,7 +86,13 @@ _switch_to() {
 
   # Swap panes across sessions -- active goes to stash, target comes home
   if [[ -n "$active" ]]; then
-    tmux swap-pane -Z -s "$active" -t "$target"
+    # Pre-size the stash window to match home so the swap does not trigger
+    # a SIGWINCH resize that causes a full rescroll in the target agent.
+    local hw=$(tmux display -p '#{window_width}')
+    local hh=$(tmux display -p '#{window_height}')
+    tmux resize-window -t "$target_win" -x "$hw" -y "$hh" 2>/dev/null
+
+    tmux swap-pane -s "$active" -t "$target"
     tmux select-window -t "$home"
     tmux select-pane -t "$target"
   fi
