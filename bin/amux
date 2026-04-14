@@ -443,55 +443,58 @@ cmd_kill() {
       tmux send-keys -t "$pid" "/exit" Enter 2>/dev/null
     done < <(_agent_pane_ids "$home")
 
-    # Wait for graceful exit
-    sleep 3
+    # Background the wait-and-force-kill so amux returns immediately.
+    # Redirect all FDs so tmux run-shell doesn't wait on inherited pipes.
+    ( sleep 3
 
-    # Collect any agent panes not yet cleaned up by _pane_died
-    local -a remaining=()
-    while IFS= read -r pid; do
-      remaining+=("$pid")
-    done < <(_agent_pane_ids "$home")
+      # Collect any agent panes not yet cleaned up by _pane_died
+      local -a remaining=()
+      local pid
+      while IFS= read -r pid; do
+        remaining+=("$pid")
+      done < <(_agent_pane_ids "$home")
 
-    if (( ${#remaining[@]} > 0 )); then
-      # Find the agent pane currently in the home window
-      local home_pane=""
-      for pid in "${remaining[@]}"; do
-        local win=$(tmux display -t "$pid" -p '#{window_id}' 2>/dev/null)
-        if [[ "$win" == "$home" ]]; then
-          home_pane="$pid"
-          break
-        fi
-      done
-
-      # Kill all agents NOT in the home window first
-      for pid in "${remaining[@]}"; do
-        [[ "$pid" == "$home_pane" ]] && continue
-        tmux kill-pane -t "$pid" 2>/dev/null
-      done
-
-      # Restore the original shell pane, then kill the last agent
-      if [[ -n "$home_pane" ]]; then
-        local shell_pane=""
-        local sp sw
-        while IFS=$'\t' read -r sp sw; do
-          if [[ "$sw" == "$home" ]]; then
-            shell_pane="$sp"
+      if (( ${#remaining[@]} > 0 )); then
+        # Find the agent pane currently in the home window
+        local home_pane=""
+        for pid in "${remaining[@]}"; do
+          local win=$(tmux display -t "$pid" -p '#{window_id}' 2>/dev/null)
+          if [[ "$win" == "$home" ]]; then
+            home_pane="$pid"
             break
           fi
-        done < <(tmux list-panes -a -F $'#{pane_id}\t#{@amux-shell}' -f '#{@amux-shell}' 2>/dev/null)
+        done
 
-        if [[ -n "$shell_pane" ]]; then
-          tmux swap-pane -s "$home_pane" -t "$shell_pane"
-          tmux kill-pane -t "$home_pane" 2>/dev/null
-          tmux set-option -pu -t "$shell_pane" @amux-shell
-        else
-          # No stashed shell -- respawn a fresh terminal
-          tmux respawn-pane -k -t "$home_pane"
+        # Kill all agents NOT in the home window first
+        for pid in "${remaining[@]}"; do
+          [[ "$pid" == "$home_pane" ]] && continue
+          tmux kill-pane -t "$pid" 2>/dev/null
+        done
+
+        # Restore the original shell pane, then kill the last agent
+        if [[ -n "$home_pane" ]]; then
+          local shell_pane=""
+          local sp sw
+          while IFS=$'\t' read -r sp sw; do
+            if [[ "$sw" == "$home" ]]; then
+              shell_pane="$sp"
+              break
+            fi
+          done < <(tmux list-panes -a -F $'#{pane_id}\t#{@amux-shell}' -f '#{@amux-shell}' 2>/dev/null)
+
+          if [[ -n "$shell_pane" ]]; then
+            tmux swap-pane -s "$home_pane" -t "$shell_pane"
+            tmux kill-pane -t "$home_pane" 2>/dev/null
+            tmux set-option -pu -t "$shell_pane" @amux-shell
+          else
+            # No stashed shell -- respawn a fresh terminal
+            tmux respawn-pane -k -t "$home_pane"
+          fi
         fi
-      fi
 
-      tmux set-option -w -t "$home" pane-border-status off 2>/dev/null
-    fi
+        tmux set-option -w -t "$home" pane-border-status off 2>/dev/null
+      fi
+    ) </dev/null >/dev/null 2>&1 &!
 
   elif [[ "$target" == "--dead" ]]; then
     local pid
@@ -512,13 +515,10 @@ cmd_kill() {
 
     tmux send-keys -t "$pane" "/exit" Enter 2>/dev/null
 
-    local i dead
-    for i in {1..6}; do
-      sleep 0.5
-      dead=$(tmux display -t "$pane" -p '#{pane_dead}' 2>/dev/null || echo "1")
-      [[ "$dead" == "1" ]] && break
-    done
-    tmux kill-pane -t "$pane" 2>/dev/null
+    # Background the wait-and-force-kill so amux returns immediately.
+    # The pane-died hook handles cleanup when the agent exits gracefully;
+    # this is a safety net for agents that ignore /exit.
+    ( sleep 3 && tmux kill-pane -t "$pane" ) </dev/null >/dev/null 2>&1 &!
   else
     echo "Usage: amux kill <name|--dead|--all>" >&2
     return 1
@@ -784,9 +784,8 @@ cmd__kill_pick() {
 cmd__kill_pane() {
   local pane="$1"
   [[ -z "$pane" ]] && return 1
-  local self="$AMUX_BIN"
   tmux send-keys -t "$pane" "/exit" Enter 2>/dev/null
-  ( sleep 3 && tmux kill-pane -t "$pane" 2>/dev/null; "$self" _update_name 2>/dev/null ) &!
+  ( sleep 3 && tmux kill-pane -t "$pane" ) </dev/null >/dev/null 2>&1 &!
 }
 
 cmd__pane_died() {
@@ -846,11 +845,10 @@ cmd__kill_current() {
   local is_agent=$(tmux display -p '#{@amux-agent}' 2>/dev/null)
   if [[ "$is_agent" == "1" ]]; then
     local current=$(tmux display -p '#{pane_id}')
-    local self="$AMUX_BIN"
     # Switch to the next agent before killing this one
     cmd_next 2>/dev/null
     tmux send-keys -t "$current" "/exit" Enter 2>/dev/null
-    ( sleep 3 && tmux kill-pane -t "$current" 2>/dev/null; "$self" _update_name 2>/dev/null ) &!
+    ( sleep 3 && tmux kill-pane -t "$current" ) </dev/null >/dev/null 2>&1 &!
   fi
   return 0
 }
